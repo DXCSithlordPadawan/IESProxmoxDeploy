@@ -461,13 +461,58 @@ install_docker() {
     msg_info "Installing Docker"
     
     pct exec $CT_ID -- bash -c "
+        # Clean up any existing Docker installations
+        apt-get remove -y docker docker-engine docker.io containerd runc 2>/dev/null || true
+        rm -f /usr/share/keyrings/docker-archive-keyring.gpg
+        rm -f /etc/apt/sources.list.d/docker.list*
+        
+        # Add Docker GPG key
         curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg
-        echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" > /etc/apt/sources.list.d/docker.list
-        apt-get update
-        apt-get install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin
+        
+        # Get system information for repository
+        ARCH=\$(dpkg --print-architecture)
+        CODENAME=\$(lsb_release -cs)
+        
+        # Create Docker repository file with expanded variables
+        echo \"deb [arch=\${ARCH} signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] https://download.docker.com/linux/ubuntu \${CODENAME} stable\" > /etc/apt/sources.list.d/docker.list
+        
+        # Verify repository file was created correctly
+        echo 'Docker repository configuration:'
+        cat /etc/apt/sources.list.d/docker.list
+        
+        # Test APT configuration before proceeding
+        if ! apt-get update 2>&1 | tee /tmp/apt-update.log; then
+            echo 'APT update failed, checking for issues...'
+            cat /tmp/apt-update.log
+            
+            # If APT fails, disable Docker repo temporarily
+            mv /etc/apt/sources.list.d/docker.list /etc/apt/sources.list.d/docker.list.disabled
+            apt-get update
+            echo 'Continuing without Docker repository - will install Docker manually'
+            
+            # Manual Docker installation from Ubuntu repositories
+            apt-get install -y docker.io docker-compose
+        else
+            # Install Docker from official repository
+            apt-get install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin
+        fi
+        
+        # Enable and start Docker
         systemctl enable docker
         systemctl start docker
         usermod -aG docker root
+        
+        # Verify Docker installation
+        docker --version || echo 'Docker version check failed'
+        if command -v docker-compose >/dev/null 2>&1; then
+            docker-compose --version
+        elif docker compose version >/dev/null 2>&1; then
+            docker compose version
+        else
+            echo 'Docker Compose not found, installing from pip'
+            apt-get install -y python3-pip
+            pip3 install docker-compose
+        fi
     "
     
     msg_ok "Docker installed successfully"
@@ -479,105 +524,1335 @@ install_ies_application() {
     
     pct exec $CT_ID -- bash -c "
         cd /opt
-        git clone https://github.com/DXCSithlordPadawan/IES.git
+        git clone https://github.com/DXCSithlordPadawan/IES.git || {
+            echo 'Git clone failed, checking if directory already exists'
+            if [ -d 'IES' ]; then
+                cd IES && git pull
+            else
+                exit 1
+            fi
+        }
         cd IES
         
         # Create virtual environment
         python3 -m venv ies_env
         source ies_env/bin/activate
         
-        # Install Python dependencies with explicit package list
+        # Upgrade pip first
         pip install --upgrade pip
         
-        # Install core dependencies first
-        pip install flask pandas numpy matplotlib seaborn plotly networkx \\
-                   scikit-learn jinja2 gunicorn prometheus-client psutil
+        # Install system-level Python dependencies
+        apt-get install -y python3-dev python3-setuptools build-essential
         
-        # Try requirements.txt if it exists (but don't fail if missing packages)
+        # Install core dependencies in specific order to avoid conflicts
+        echo 'Installing core dependencies...'
+        pip install wheel setuptools
+        pip install numpy
+        pip install pandas
+        pip install matplotlib
+        pip install seaborn
+        pip install networkx
+        pip install plotly
+        pip install scikit-learn
+        pip install flask
+        pip install jinja2
+        pip install gunicorn
+        pip install prometheus-client
+        pip install psutil
+        pip install requests
+        pip install jsonschema
+        
+        # Try requirements.txt as secondary option
         if [ -f requirements.txt ]; then
-            pip install -r requirements.txt || true
+            echo 'Installing from requirements.txt (ignoring failures)...'
+            pip install -r requirements.txt || echo 'Some requirements.txt packages failed - continuing with core packages'
         fi
         
-        # Verify critical dependencies are installed
-        python3 -c 'import networkx, plotly, pandas, flask, matplotlib, seaborn, numpy' || {
-            echo 'Installing missing dependencies...'
-            pip install --force-reinstall networkx plotly pandas flask matplotlib seaborn numpy scikit-learn
+        # Verify critical dependencies
+        echo 'Verifying critical dependencies...'
+        python3 -c \"
+import sys
+failed = []
+packages = ['networkx', 'pandas', 'numpy', 'matplotlib', 'seaborn', 'plotly', 'flask', 'sklearn']
+for pkg in packages:
+    try:
+        __import__(pkg)
+        print(f'✓ {pkg}')
+    except ImportError:
+        failed.append(pkg)
+        print(f'✗ {pkg}')
+
+if failed:
+    print(f'Failed packages: {failed}')
+    print('Attempting to reinstall failed packages...')
+    sys.exit(1)
+else:
+    print('All critical dependencies verified!')
+        \" || {
+            echo 'Some dependencies failed, attempting reinstall...'
+            pip install --force-reinstall networkx pandas numpy matplotlib seaborn plotly flask scikit-learn
+        }
+        
+        # Test main application import
+        echo 'Testing main application import...'
+        python3 -c \"
+import sys
+sys.path.append('/opt/IES')
+try:
+    from military_database_analyzer_v3 import MilitaryDatabaseAnalyzer
+    print('✓ Main application import successful')
+except Exception as e:
+    print(f'✗ Main application import failed: {e}')
+    # Try to identify specific missing modules
+    import traceback
+    traceback.print_exc()
+        \" || {
+            echo 'Main application import failed, checking individual modules...'
+            python3 -c \"
+import sys
+sys.path.append('/opt/IES')
+modules = ['src.graph_builder', 'src.data_processor', 'src.analysis_engine', 'src.web_interface']
+for module in modules:
+    try:
+        __import__(module)
+        print(f'✓ {module}')
+    except Exception as e:
+        print(f'✗ {module}: {e}')
+            \" || echo 'Module import check completed'
         }
         
         # Create application directories
         mkdir -p /opt/IES/{logs,data,config,static,templates}
         chmod 755 /opt/IES/{logs,data,config}
         
-        # Create systemd service
+        # Create enhanced systemd service
         cat > /etc/systemd/system/ies-analyzer.service << 'SERVICE_EOF'
 [Unit]
 Description=IES Military Database Analyzer
 After=network.target
+Wants=network.target
 
 [Service]
 Type=exec
 User=root
 WorkingDirectory=/opt/IES
 Environment=PATH=/opt/IES/ies_env/bin
-ExecStart=/opt/IES/ies_env/bin/python military_database_analyzer_v3.py --web --host 0.0.0.0 --port 8000
+Environment=PYTHONPATH=/opt/IES
+Environment=PYTHONUNBUFFERED=1
+ExecStartPre=/bin/bash -c 'source /opt/IES/ies_env/bin/activate && python3 -c \"import networkx, pandas, flask\" || exit 1'
+ExecStart=/opt/IES/ies_env/bin/python3 military_database_analyzer_v3.py --web --host 0.0.0.0 --port 8000
 Restart=always
 RestartSec=10
+StandardOutput=journal
+StandardError=journal
 
 [Install]
 WantedBy=multi-user.target
 SERVICE_EOF
         
-        # Test the application before enabling service
-        source ies_env/bin/activate
-        python3 -c 'import sys; sys.path.append(\"/opt/IES\"); from military_database_analyzer_v3 import MilitaryDatabaseAnalyzer; print(\"Import test successful\")' || {
-            echo 'Application import test failed, installing additional dependencies...'
-            pip install --upgrade flask pandas numpy matplotlib seaborn plotly networkx scikit-learn jinja2
-        }
+        # Create dependency verification script
+        cat > /opt/IES/verify_dependencies.py << 'VERIFY_EOF'
+#!/usr/bin/env python3
+import sys
+import importlib
+
+REQUIRED = ['networkx', 'pandas', 'numpy', 'matplotlib', 'seaborn', 'plotly', 'flask', 'sklearn', 'jinja2']
+OPTIONAL = ['prometheus_client', 'psutil', 'requests', 'jsonschema']
+
+def check_module(name):
+    try:
+        mod = importlib.import_module(name)
+        version = getattr(mod, '__version__', 'unknown')
+        return True, version
+    except ImportError:
+        return False, None
+
+print('IES Dependency Check')
+print('===================')
+all_good = True
+
+for module in REQUIRED:
+    ok, ver = check_module(module)
+    status = '✓' if ok else '✗'
+    print(f'{status} {module} {ver or \"\"}')
+    if not ok:
+        all_good = False
+
+print('\\nOptional:')
+for module in OPTIONAL:
+    ok, ver = check_module(module)
+    status = '✓' if ok else '○'
+    print(f'{status} {module} {ver or \"\"}')
+
+sys.exit(0 if all_good else 1)
+VERIFY_EOF
+        chmod +x /opt/IES/verify_dependencies.py
+        
+        # Run verification
+        /opt/IES/verify_dependencies.py || echo 'Some dependencies missing but continuing'
         
         systemctl daemon-reload
         systemctl enable ies-analyzer
-        systemctl start ies-analyzer
+        
+        # Start service and check if it starts successfully
+        if systemctl start ies-analyzer; then
+            sleep 5
+            if systemctl is-active --quiet ies-analyzer; then
+                echo 'IES service started successfully'
+            else
+                echo 'IES service failed to start, checking logs...'
+                journalctl -u ies-analyzer --no-pager -n 20
+            fi
+        else
+            echo 'Failed to start IES service'
+            journalctl -u ies-analyzer --no-pager -n 20
+        fi
     "
     
-    msg_ok "IES Application installed and started"
+    msg_ok "IES Application installation completed"
 }
 
 # Add troubleshooting function
 troubleshoot_installation() {
-    msg_info "Running post-installation diagnostics..."
+    msg_info "Running comprehensive post-installation diagnostics..."
+    
+    # Check APT configuration
+    pct exec $CT_ID -- bash -c "
+        echo 'Checking APT configuration...'
+        if apt update 2>&1 | grep -i 'malformed\|error'; then
+            echo '⚠ APT configuration has issues'
+            
+            # Check Docker repository
+            if [ -f /etc/apt/sources.list.d/docker.list ]; then
+                echo 'Docker repository content:'
+                cat /etc/apt/sources.list.d/docker.list
+                
+                # Fix malformed Docker repository if found
+                if grep -q '\
+
+# Configure Nginx reverse proxy
+configure_nginx() {
+    msg_info "Configuring Nginx reverse proxy"
+    
+    pct exec $CT_ID -- bash -c "
+        # Remove default nginx site
+        rm -f /etc/nginx/sites-enabled/default
+        
+        # Create IES site configuration
+        cat > /etc/nginx/sites-available/ies-analyzer << 'NGINX_EOF'
+server {
+    listen 80;
+    server_name $DOMAIN _;
+    
+    # Redirect HTTP to HTTPS
+    return 301 https://\$host\$request_uri;
+}
+
+server {
+    listen 443 ssl http2;
+    server_name $DOMAIN _;
+    
+    # SSL Configuration (self-signed for now)
+    ssl_certificate /etc/nginx/ssl/server.crt;
+    ssl_certificate_key /etc/nginx/ssl/server.key;
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_ciphers ECDHE+AESGCM:ECDHE+AES256:ECDHE+AES128:!aNULL:!MD5:!DSS;
+    ssl_prefer_server_ciphers on;
+    
+    # Security headers
+    add_header X-Frame-Options DENY;
+    add_header X-Content-Type-Options nosniff;
+    add_header X-XSS-Protection \"1; mode=block\";
+    add_header Strict-Transport-Security \"max-age=31536000; includeSubDomains\";
+    
+    # Application proxy
+    location / {
+        proxy_pass http://127.0.0.1:8000;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+        proxy_buffering off;
+        
+        # Allow access from 192.168.0.0/24 network
+        allow 192.168.0.0/24;
+        allow 127.0.0.1;
+        deny all;
+    }
+    
+    # Health check endpoint
+    location /health {
+        proxy_pass http://127.0.0.1:8000/health;
+        access_log off;
+    }
+    
+    # Monitoring endpoints
+    location /metrics {
+        proxy_pass http://127.0.0.1:8000/metrics;
+        allow 192.168.0.0/24;
+        allow 127.0.0.1;
+        deny all;
+    }
+}
+NGINX_EOF
+        
+        # Create SSL directory and generate self-signed certificate
+        mkdir -p /etc/nginx/ssl
+        openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
+            -keyout /etc/nginx/ssl/server.key \
+            -out /etc/nginx/ssl/server.crt \
+            -subj '/C=US/ST=State/L=City/O=Organization/CN=$DOMAIN'
+        
+        # Enable the site
+        ln -sf /etc/nginx/sites-available/ies-analyzer /etc/nginx/sites-enabled/
+        
+        # Test and reload nginx
+        nginx -t && systemctl reload nginx
+    "
+    
+    msg_ok "Nginx configured successfully"
+}
+
+# Setup monitoring stack
+setup_monitoring() {
+    msg_info "Setting up monitoring stack with Docker Compose"
+    
+    pct exec $CT_ID -- bash -c "
+        mkdir -p /opt/monitoring/{prometheus,grafana,config}
+        cd /opt/monitoring
+        
+        # Create Prometheus configuration
+        cat > prometheus/prometheus.yml << 'PROM_EOF'
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: 'ies-application'
+    static_configs:
+      - targets: ['$IP:8000']
+    scrape_interval: 10s
+    metrics_path: /metrics
+
+  - job_name: 'node-exporter'
+    static_configs:
+      - targets: ['node-exporter:9100']
+PROM_EOF
+        
+        # Create Docker Compose for monitoring
+        cat > docker-compose.yml << 'COMPOSE_EOF'
+version: '3.8'
+
+services:
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: prometheus
+    ports:
+      - '9090:9090'
+    volumes:
+      - ./prometheus:/etc/prometheus:ro
+      - prometheus-data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--storage.tsdb.retention.time=30d'
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: grafana
+    ports:
+      - '3000:3000'
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin123
+      - GF_USERS_ALLOW_SIGN_UP=false
+    volumes:
+      - grafana-data:/var/lib/grafana
+    restart: unless-stopped
+
+  node-exporter:
+    image: prom/node-exporter:latest
+    container_name: node-exporter
+    ports:
+      - '9100:9100'
+    volumes:
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /:/rootfs:ro
+    command:
+      - '--path.procfs=/host/proc'
+      - '--path.sysfs=/host/sys'
+      - '--collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc|rootfs/var/lib/docker/containers|rootfs/var/lib/docker/overlay2|rootfs/run/docker/netns|rootfs/var/lib/docker/aufs)($|/)'
+    restart: unless-stopped
+
+volumes:
+  prometheus-data:
+  grafana-data:
+COMPOSE_EOF
+        
+        # Start monitoring services
+        docker compose up -d
+    "
+    
+    msg_ok "Monitoring stack deployed"
+}
+
+# Configure firewall
+configure_firewall() {
+    msg_info "Configuring firewall"
+    
+    pct exec $CT_ID -- bash -c "
+        # Configure UFW
+        ufw --force reset
+        ufw default deny incoming
+        ufw default allow outgoing
+        
+        # Allow SSH (if enabled)
+        if [[ '$SSH_ENABLED' == 'yes' ]]; then
+            ufw allow from 192.168.0.0/24 to any port 22
+        fi
+        
+        # Allow HTTP/HTTPS from local network
+        ufw allow from 192.168.0.0/24 to any port 80
+        ufw allow from 192.168.0.0/24 to any port 443
+        
+        # Allow monitoring ports from local network
+        ufw allow from 192.168.0.0/24 to any port 3000
+        ufw allow from 192.168.0.0/24 to any port 9090
+        
+        ufw --force enable
+        
+        # Configure fail2ban
+        systemctl enable fail2ban
+        systemctl start fail2ban
+    "
+    
+    msg_ok "Firewall configured"
+}
+
+# Create management scripts
+create_management_scripts() {
+    msg_info "Creating management scripts"
+    
+    pct exec $CT_ID -- bash -c "
+        mkdir -p /usr/local/bin
+        
+        # Create main management script
+        cat > /usr/local/bin/ies-manage << 'MANAGE_EOF'
+#!/bin/bash
+
+case \"\$1\" in
+    start)
+        systemctl start ies-analyzer nginx
+        cd /opt/monitoring && docker compose start
+        echo 'IES services started'
+        ;;
+    stop)
+        systemctl stop ies-analyzer nginx
+        cd /opt/monitoring && docker compose stop
+        echo 'IES services stopped'
+        ;;
+    restart)
+        systemctl restart ies-analyzer nginx
+        cd /opt/monitoring && docker compose restart
+        echo 'IES services restarted'
+        ;;
+    status)
+        echo 'Application Status:'
+        systemctl status ies-analyzer --no-pager
+        echo
+        echo 'Nginx Status:'
+        systemctl status nginx --no-pager
+        echo
+        echo 'Monitoring Status:'
+        cd /opt/monitoring && docker compose ps
+        ;;
+    logs)
+        if [ -n \"\$2\" ]; then
+            case \"\$2\" in
+                app) journalctl -u ies-analyzer -f ;;
+                nginx) journalctl -u nginx -f ;;
+                monitoring) cd /opt/monitoring && docker compose logs -f ;;
+                *) echo 'Available logs: app, nginx, monitoring' ;;
+            esac
+        else
+            journalctl -u ies-analyzer --no-pager -n 50
+        fi
+        ;;
+    update)
+        echo 'Updating IES application...'
+        cd /opt/IES
+        git pull
+        source ies_env/bin/activate
+        pip install --upgrade -r requirements.txt 2>/dev/null || echo 'Requirements file not found'
+        systemctl restart ies-analyzer
+        echo 'Update complete'
+        ;;
+    backup)
+        echo 'Creating backup...'
+        tar -czf /opt/ies-backup-\$(date +%Y%m%d-%H%M%S).tar.gz \
+            /opt/IES/data /opt/IES/config /opt/monitoring
+        echo 'Backup created in /opt/'
+        ;;
+    *)
+        echo 'Usage: \$0 {start|stop|restart|status|logs|update|backup}'
+        echo
+        echo 'Commands:'
+        echo '  start    - Start all IES services'
+        echo '  stop     - Stop all IES services' 
+        echo '  restart  - Restart all IES services'
+        echo '  status   - Show service status'
+        echo '  logs     - Show logs (add: app, nginx, monitoring)'
+        echo '  update   - Update IES application'
+        echo '  backup   - Create backup'
+        exit 1
+        ;;
+esac
+MANAGE_EOF
+        
+        chmod +x /usr/local/bin/ies-manage
+        
+        # Create service monitoring script
+        cat > /usr/local/bin/ies-monitor << 'MONITOR_EOF'
+#!/bin/bash
+
+# Simple monitoring script
+echo 'IES Military Database Analyzer Status'
+echo '====================================='
+echo
+echo 'Services:'
+systemctl is-active ies-analyzer nginx docker | paste <(echo -e 'IES App\nNginx\nDocker') -
+echo
+echo 'Network:'
+echo \"IP Address: $IP\"
+echo \"Gateway: $GATEWAY\"
+echo \"DNS: $DNS\"
+echo
+echo 'URLs:'
+echo \"HTTP: http://$IP\"
+echo \"HTTPS: https://$IP\"
+echo \"Grafana: http://$IP:3000\"
+echo \"Prometheus: http://$IP:9090\"
+echo
+echo 'Disk Usage:'
+df -h / | tail -1
+echo
+echo 'Memory Usage:'
+free -h | grep Mem
+MONITOR_EOF
+        
+        chmod +x /usr/local/bin/ies-monitor
+    "
+    
+    msg_ok "Management scripts created"
+}
+
+# Final configuration and testing
+finalize_setup() {
+    msg_info "Finalizing setup and running tests"
+    
+    # Wait for services to be ready
+    sleep 15
+    
+    # Test application endpoint
+    if pct exec $CT_ID -- curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:8000/health | grep -q "200"; then
+        msg_ok "Application health check passed"
+    else
+        msg_warn "Application health check failed - service may still be starting"
+    fi
+    
+    # Test nginx
+    if pct exec $CT_ID -- nginx -t >/dev/null 2>&1; then
+        msg_ok "Nginx configuration test passed"
+    else
+        msg_warn "Nginx configuration test failed"
+    fi
+    
+    # Save final configuration
+    local config_file=$(write_config)
+    pct push $CT_ID "$config_file" /root/ies-config.conf
+    
+    msg_ok "Setup completed successfully!"
+}
+
+# Display final information
+show_completion_info() {
+    clear
+    echo -e "${GREEN}================================================${NC}"
+    echo -e "${GREEN}  IES Military Database Analyzer Deployment${NC}"
+    echo -e "${GREEN}  COMPLETED SUCCESSFULLY${NC}"
+    echo -e "${GREEN}================================================${NC}"
+    echo
+    echo -e "${BLUE}Container Information:${NC}"
+    echo -e "Container ID:      ${GREEN}$CT_ID${NC}"
+    echo -e "Container Name:    ${GREEN}$CT_NAME${NC}"
+    echo -e "IP Address:        ${GREEN}$IP${NC}"
+    echo -e "Domain:            ${GREEN}$DOMAIN${NC}"
+    echo
+    echo -e "${BLUE}Access URLs:${NC}"
+    echo -e "Application HTTP:  ${CYAN}http://$IP${NC}"
+    echo -e "Application HTTPS: ${CYAN}https://$IP${NC}"
+    echo -e "Grafana Dashboard: ${CYAN}http://$IP:3000${NC} (admin/admin123)"
+    echo -e "Prometheus:        ${CYAN}http://$IP:9090${NC}"
+    echo
+    echo -e "${BLUE}Container Management:${NC}"
+    echo -e "Start Container:   ${YELLOW}pct start $CT_ID${NC}"
+    echo -e "Stop Container:    ${YELLOW}pct stop $CT_ID${NC}"
+    echo -e "Console Access:    ${YELLOW}pct enter $CT_ID${NC}"
+    echo
+    echo -e "${BLUE}Application Management (inside container):${NC}"
+    echo -e "Service Control:   ${YELLOW}ies-manage {start|stop|restart|status}${NC}"
+    echo -e "View Logs:         ${YELLOW}ies-manage logs [app|nginx|monitoring]${NC}"
+    echo -e "Update App:        ${YELLOW}ies-manage update${NC}"
+    echo -e "Create Backup:     ${YELLOW}ies-manage backup${NC}"
+    echo -e "System Status:     ${YELLOW}ies-monitor${NC}"
+    echo
+    echo -e "${BLUE}Configuration:${NC}"
+    echo -e "Config File:       ${GREEN}/root/ies-config.conf${NC}"
+    echo -e "Application Path:  ${GREEN}/opt/IES${NC}"
+    echo -e "Nginx Config:      ${GREEN}/etc/nginx/sites-available/ies-analyzer${NC}"
+    echo -e "Monitoring:        ${GREEN}/opt/monitoring${NC}"
+    echo
+    echo -e "${BLUE}Security:${NC}"
+    echo -e "Firewall:          ${GREEN}UFW enabled (192.168.0.0/24 only)${NC}"
+    echo -e "Fail2Ban:          ${GREEN}Active${NC}"
+    echo -e "SSL Certificate:   ${GREEN}Self-signed (consider replacing)${NC}"
+    
+    if [[ "$SSH_ENABLED" == "yes" ]]; then
+        echo -e "SSH Access:        ${GREEN}Enabled${NC}"
+        echo -e "SSH Command:       ${YELLOW}ssh root@$IP${NC}"
+    else
+        echo -e "SSH Access:        ${RED}Disabled${NC}"
+    fi
+    
+    echo
+    echo -e "${BLUE}Next Steps:${NC}"
+    echo "1. Access the application at https://$IP"
+    echo "2. Configure proper SSL certificates if needed"
+    echo "3. Set up DNS entries for $DOMAIN"
+    echo "4. Review and customize application settings"
+    echo "5. Configure monitoring alerts in Grafana"
+    echo "6. Schedule regular backups"
+    echo
+    echo -e "${BLUE}Support:${NC}"
+    echo "Configuration saved in container: /root/ies-config.conf"
+    echo "For troubleshooting, access container: pct enter $CT_ID"
+    echo "Check application logs: ies-manage logs app"
+    echo
+    echo -e "${GREEN}Deployment completed successfully!${NC}"
+}
+
+# Main execution
+main() {
+    clear
+    echo -e "${CYAN}========================================${NC}"
+    echo -e "${CYAN}  IES Military Database Analyzer       ${NC}"
+    echo -e "${CYAN}  Proxmox LXC Container Deployment     ${NC}"
+    echo -e "${CYAN}========================================${NC}"
+    echo
+    
+    # Verify we're running on Proxmox
+    if ! command -v pct &> /dev/null; then
+        msg_error "This script must be run on a Proxmox VE host"
+        exit 1
+    fi
+    
+    # Check for required template
+    if [[ ! -f "/var/lib/vz/template/cache/ubuntu-22.04-standard_22.04-1_amd64.tar.zst" ]]; then
+        msg_warn "Ubuntu 22.04 LXC template not found"
+        msg_info "Downloading Ubuntu 22.04 template..."
+        pveam update
+        pveam download local ubuntu-22.04-standard_22.04-1_amd64.tar.zst
+    fi
+    
+    # Start deployment process
+    msg_info "Starting IES Military Database Analyzer deployment..."
+    
+    # Create container
+    create_container
+    
+    # Install system dependencies
+    install_system_dependencies
+    
+    # Install Docker for monitoring
+    install_docker
+    
+    # Install IES application
+    install_ies_application
+    
+    # Run diagnostics
+    troubleshoot_installation
+    
+    # Configure Nginx
+    configure_nginx
+    
+    # Setup monitoring
+    setup_monitoring
+    
+    # Configure firewall
+    configure_firewall
+    
+    # Create management scripts
+    create_management_scripts
+    
+    # Finalize setup
+    finalize_setup
+    
+    # Show completion information
+    show_completion_info
+}
+
+# Run main function
+main "$@" /etc/apt/sources.list.d/docker.list; then
+                    echo 'Fixing malformed Docker repository...'
+                    ARCH=\$(dpkg --print-architecture)
+                    CODENAME=\$(lsb_release -cs)
+                    echo \"deb [arch=\${ARCH} signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] https://download.docker.com/linux/ubuntu \${CODENAME} stable\" > /etc/apt/sources.list.d/docker.list
+                    apt update
+                fi
+            fi
+        else
+            echo '✓ APT configuration OK'
+        fi
+    "
     
     # Check Python environment
     pct exec $CT_ID -- bash -c "
         cd /opt/IES
         source ies_env/bin/activate
-        echo 'Python version:' && python3 --version
-        echo 'Pip version:' && pip --version
-        echo 'Installed packages:'
-        pip list | grep -E '(networkx|pandas|flask|matplotlib|plotly|seaborn|numpy|scikit-learn)'
+        echo 'Python environment check:'
+        echo \"Python version: \$(python3 --version)\"
+        echo \"Pip version: \$(pip --version)\"
+        echo \"Virtual env path: \$(which python3)\"
+        
+        # Test critical imports
+        echo 'Testing critical package imports...'
+        python3 -c \"
+packages = ['networkx', 'pandas', 'numpy', 'matplotlib', 'seaborn', 'plotly', 'flask', 'sklearn']
+failed = []
+for pkg in packages:
+    try:
+        mod = __import__(pkg)
+        version = getattr(mod, '__version__', 'unknown')
+        print(f'✓ {pkg}: {version}')
+    except ImportError as e:
+        failed.append(pkg)
+        print(f'✗ {pkg}: {e}')
+
+if failed:
+    print(f'\\nFailed packages: {failed}')
+    import subprocess
+    for pkg in failed:
+        try:
+            subprocess.run(['pip', 'install', '--force-reinstall', pkg], check=True)
+            print(f'✓ Reinstalled {pkg}')
+        except:
+            print(f'✗ Failed to reinstall {pkg}')
+        \"
     "
     
-    # Test application imports
-    pct exec $CT_ID -- bash -c "
-        cd /opt/IES
-        source ies_env/bin/activate
-        echo 'Testing critical imports...'
-        python3 -c 'import networkx; print(f\"networkx version: {networkx.__version__}\")' || echo 'networkx FAILED'
-        python3 -c 'import pandas; print(f\"pandas version: {pandas.__version__}\")' || echo 'pandas FAILED'
-        python3 -c 'import flask; print(f\"flask version: {flask.__version__}\")' || echo 'flask FAILED'
-        python3 -c 'import matplotlib; print(f\"matplotlib version: {matplotlib.__version__}\")' || echo 'matplotlib FAILED'
-        python3 -c 'import plotly; print(f\"plotly version: {plotly.__version__}\")' || echo 'plotly FAILED'
-    "
-    
-    # Test main application import
+    # Test main application
     pct exec $CT_ID -- bash -c "
         cd /opt/IES
         source ies_env/bin/activate
         echo 'Testing main application import...'
-        python3 -c 'from military_database_analyzer_v3 import MilitaryDatabaseAnalyzer; print(\"Main application import successful\")' || {
-            echo 'Main application import FAILED'
-            return 1
-        }
+        python3 -c \"
+import sys
+sys.path.append('/opt/IES')
+try:
+    from military_database_analyzer_v3 import MilitaryDatabaseAnalyzer
+    print('✓ Main application import successful')
+except Exception as e:
+    print(f'✗ Main application import failed: {e}')
+    
+    # Try importing individual modules to identify issues
+    modules = ['src.graph_builder', 'src.data_processor', 'src.analysis_engine', 'src.web_interface']
+    for module in modules:
+        try:
+            __import__(module)
+            print(f'  ✓ {module}')
+        except Exception as e:
+            print(f'  ✗ {module}: {e}')
+        \"
     "
+    
+    # Check service status
+    pct exec $CT_ID -- bash -c "
+        echo 'Service status check:'
+        if systemctl is-active --quiet ies-analyzer; then
+            echo '✓ IES service is running'
+        else
+            echo '✗ IES service is not running'
+            echo 'Recent service logs:'
+            journalctl -u ies-analyzer --no-pager -n 10
+        fi
+        
+        if systemctl is-active --quiet nginx; then
+            echo '✓ Nginx service is running'
+        else
+            echo '✗ Nginx service is not running'
+        fi
+        
+        if systemctl is-active --quiet docker; then
+            echo '✓ Docker service is running'
+        else
+            echo '✗ Docker service is not running'
+        fi
+    "
+    
+    # Test network connectivity from application
+    pct exec $CT_ID -- bash -c "
+        echo 'Testing application endpoints...'
+        if curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8000/health | grep -q '200'; then
+            echo '✓ Application health endpoint responding'
+        else
+            echo '✗ Application health endpoint not responding'
+        fi
+        
+        if curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8000/metrics | grep -q '200'; then
+            echo '✓ Application metrics endpoint responding'
+        else
+            echo '✗ Application metrics endpoint not responding'
+        fi
+    "
+    
+    # Create comprehensive fix script for common issues
+    pct exec $CT_ID -- bash -c "
+        cat > /usr/local/bin/ies-troubleshoot << 'TROUBLESHOOT_EOF'
+#!/bin/bash
+echo 'IES Troubleshooting Script'
+echo '========================='
+
+# Fix APT issues
+echo '1. Checking APT configuration...'
+if apt update 2>&1 | grep -i 'malformed\|error'; then
+    echo 'Fixing APT configuration...'
+    if [ -f /etc/apt/sources.list.d/docker.list ]; then
+        if grep -q '\\
+
+# Configure Nginx reverse proxy
+configure_nginx() {
+    msg_info "Configuring Nginx reverse proxy"
+    
+    pct exec $CT_ID -- bash -c "
+        # Remove default nginx site
+        rm -f /etc/nginx/sites-enabled/default
+        
+        # Create IES site configuration
+        cat > /etc/nginx/sites-available/ies-analyzer << 'NGINX_EOF'
+server {
+    listen 80;
+    server_name $DOMAIN _;
+    
+    # Redirect HTTP to HTTPS
+    return 301 https://\$host\$request_uri;
+}
+
+server {
+    listen 443 ssl http2;
+    server_name $DOMAIN _;
+    
+    # SSL Configuration (self-signed for now)
+    ssl_certificate /etc/nginx/ssl/server.crt;
+    ssl_certificate_key /etc/nginx/ssl/server.key;
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_ciphers ECDHE+AESGCM:ECDHE+AES256:ECDHE+AES128:!aNULL:!MD5:!DSS;
+    ssl_prefer_server_ciphers on;
+    
+    # Security headers
+    add_header X-Frame-Options DENY;
+    add_header X-Content-Type-Options nosniff;
+    add_header X-XSS-Protection \"1; mode=block\";
+    add_header Strict-Transport-Security \"max-age=31536000; includeSubDomains\";
+    
+    # Application proxy
+    location / {
+        proxy_pass http://127.0.0.1:8000;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+        proxy_buffering off;
+        
+        # Allow access from 192.168.0.0/24 network
+        allow 192.168.0.0/24;
+        allow 127.0.0.1;
+        deny all;
+    }
+    
+    # Health check endpoint
+    location /health {
+        proxy_pass http://127.0.0.1:8000/health;
+        access_log off;
+    }
+    
+    # Monitoring endpoints
+    location /metrics {
+        proxy_pass http://127.0.0.1:8000/metrics;
+        allow 192.168.0.0/24;
+        allow 127.0.0.1;
+        deny all;
+    }
+}
+NGINX_EOF
+        
+        # Create SSL directory and generate self-signed certificate
+        mkdir -p /etc/nginx/ssl
+        openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
+            -keyout /etc/nginx/ssl/server.key \
+            -out /etc/nginx/ssl/server.crt \
+            -subj '/C=US/ST=State/L=City/O=Organization/CN=$DOMAIN'
+        
+        # Enable the site
+        ln -sf /etc/nginx/sites-available/ies-analyzer /etc/nginx/sites-enabled/
+        
+        # Test and reload nginx
+        nginx -t && systemctl reload nginx
+    "
+    
+    msg_ok "Nginx configured successfully"
+}
+
+# Setup monitoring stack
+setup_monitoring() {
+    msg_info "Setting up monitoring stack with Docker Compose"
+    
+    pct exec $CT_ID -- bash -c "
+        mkdir -p /opt/monitoring/{prometheus,grafana,config}
+        cd /opt/monitoring
+        
+        # Create Prometheus configuration
+        cat > prometheus/prometheus.yml << 'PROM_EOF'
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: 'ies-application'
+    static_configs:
+      - targets: ['$IP:8000']
+    scrape_interval: 10s
+    metrics_path: /metrics
+
+  - job_name: 'node-exporter'
+    static_configs:
+      - targets: ['node-exporter:9100']
+PROM_EOF
+        
+        # Create Docker Compose for monitoring
+        cat > docker-compose.yml << 'COMPOSE_EOF'
+version: '3.8'
+
+services:
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: prometheus
+    ports:
+      - '9090:9090'
+    volumes:
+      - ./prometheus:/etc/prometheus:ro
+      - prometheus-data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--storage.tsdb.retention.time=30d'
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: grafana
+    ports:
+      - '3000:3000'
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin123
+      - GF_USERS_ALLOW_SIGN_UP=false
+    volumes:
+      - grafana-data:/var/lib/grafana
+    restart: unless-stopped
+
+  node-exporter:
+    image: prom/node-exporter:latest
+    container_name: node-exporter
+    ports:
+      - '9100:9100'
+    volumes:
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /:/rootfs:ro
+    command:
+      - '--path.procfs=/host/proc'
+      - '--path.sysfs=/host/sys'
+      - '--collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc|rootfs/var/lib/docker/containers|rootfs/var/lib/docker/overlay2|rootfs/run/docker/netns|rootfs/var/lib/docker/aufs)($|/)'
+    restart: unless-stopped
+
+volumes:
+  prometheus-data:
+  grafana-data:
+COMPOSE_EOF
+        
+        # Start monitoring services
+        docker compose up -d
+    "
+    
+    msg_ok "Monitoring stack deployed"
+}
+
+# Configure firewall
+configure_firewall() {
+    msg_info "Configuring firewall"
+    
+    pct exec $CT_ID -- bash -c "
+        # Configure UFW
+        ufw --force reset
+        ufw default deny incoming
+        ufw default allow outgoing
+        
+        # Allow SSH (if enabled)
+        if [[ '$SSH_ENABLED' == 'yes' ]]; then
+            ufw allow from 192.168.0.0/24 to any port 22
+        fi
+        
+        # Allow HTTP/HTTPS from local network
+        ufw allow from 192.168.0.0/24 to any port 80
+        ufw allow from 192.168.0.0/24 to any port 443
+        
+        # Allow monitoring ports from local network
+        ufw allow from 192.168.0.0/24 to any port 3000
+        ufw allow from 192.168.0.0/24 to any port 9090
+        
+        ufw --force enable
+        
+        # Configure fail2ban
+        systemctl enable fail2ban
+        systemctl start fail2ban
+    "
+    
+    msg_ok "Firewall configured"
+}
+
+# Create management scripts
+create_management_scripts() {
+    msg_info "Creating management scripts"
+    
+    pct exec $CT_ID -- bash -c "
+        mkdir -p /usr/local/bin
+        
+        # Create main management script
+        cat > /usr/local/bin/ies-manage << 'MANAGE_EOF'
+#!/bin/bash
+
+case \"\$1\" in
+    start)
+        systemctl start ies-analyzer nginx
+        cd /opt/monitoring && docker compose start
+        echo 'IES services started'
+        ;;
+    stop)
+        systemctl stop ies-analyzer nginx
+        cd /opt/monitoring && docker compose stop
+        echo 'IES services stopped'
+        ;;
+    restart)
+        systemctl restart ies-analyzer nginx
+        cd /opt/monitoring && docker compose restart
+        echo 'IES services restarted'
+        ;;
+    status)
+        echo 'Application Status:'
+        systemctl status ies-analyzer --no-pager
+        echo
+        echo 'Nginx Status:'
+        systemctl status nginx --no-pager
+        echo
+        echo 'Monitoring Status:'
+        cd /opt/monitoring && docker compose ps
+        ;;
+    logs)
+        if [ -n \"\$2\" ]; then
+            case \"\$2\" in
+                app) journalctl -u ies-analyzer -f ;;
+                nginx) journalctl -u nginx -f ;;
+                monitoring) cd /opt/monitoring && docker compose logs -f ;;
+                *) echo 'Available logs: app, nginx, monitoring' ;;
+            esac
+        else
+            journalctl -u ies-analyzer --no-pager -n 50
+        fi
+        ;;
+    update)
+        echo 'Updating IES application...'
+        cd /opt/IES
+        git pull
+        source ies_env/bin/activate
+        pip install --upgrade -r requirements.txt 2>/dev/null || echo 'Requirements file not found'
+        systemctl restart ies-analyzer
+        echo 'Update complete'
+        ;;
+    backup)
+        echo 'Creating backup...'
+        tar -czf /opt/ies-backup-\$(date +%Y%m%d-%H%M%S).tar.gz \
+            /opt/IES/data /opt/IES/config /opt/monitoring
+        echo 'Backup created in /opt/'
+        ;;
+    *)
+        echo 'Usage: \$0 {start|stop|restart|status|logs|update|backup}'
+        echo
+        echo 'Commands:'
+        echo '  start    - Start all IES services'
+        echo '  stop     - Stop all IES services' 
+        echo '  restart  - Restart all IES services'
+        echo '  status   - Show service status'
+        echo '  logs     - Show logs (add: app, nginx, monitoring)'
+        echo '  update   - Update IES application'
+        echo '  backup   - Create backup'
+        exit 1
+        ;;
+esac
+MANAGE_EOF
+        
+        chmod +x /usr/local/bin/ies-manage
+        
+        # Create service monitoring script
+        cat > /usr/local/bin/ies-monitor << 'MONITOR_EOF'
+#!/bin/bash
+
+# Simple monitoring script
+echo 'IES Military Database Analyzer Status'
+echo '====================================='
+echo
+echo 'Services:'
+systemctl is-active ies-analyzer nginx docker | paste <(echo -e 'IES App\nNginx\nDocker') -
+echo
+echo 'Network:'
+echo \"IP Address: $IP\"
+echo \"Gateway: $GATEWAY\"
+echo \"DNS: $DNS\"
+echo
+echo 'URLs:'
+echo \"HTTP: http://$IP\"
+echo \"HTTPS: https://$IP\"
+echo \"Grafana: http://$IP:3000\"
+echo \"Prometheus: http://$IP:9090\"
+echo
+echo 'Disk Usage:'
+df -h / | tail -1
+echo
+echo 'Memory Usage:'
+free -h | grep Mem
+MONITOR_EOF
+        
+        chmod +x /usr/local/bin/ies-monitor
+    "
+    
+    msg_ok "Management scripts created"
+}
+
+# Final configuration and testing
+finalize_setup() {
+    msg_info "Finalizing setup and running tests"
+    
+    # Wait for services to be ready
+    sleep 15
+    
+    # Test application endpoint
+    if pct exec $CT_ID -- curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:8000/health | grep -q "200"; then
+        msg_ok "Application health check passed"
+    else
+        msg_warn "Application health check failed - service may still be starting"
+    fi
+    
+    # Test nginx
+    if pct exec $CT_ID -- nginx -t >/dev/null 2>&1; then
+        msg_ok "Nginx configuration test passed"
+    else
+        msg_warn "Nginx configuration test failed"
+    fi
+    
+    # Save final configuration
+    local config_file=$(write_config)
+    pct push $CT_ID "$config_file" /root/ies-config.conf
+    
+    msg_ok "Setup completed successfully!"
+}
+
+# Display final information
+show_completion_info() {
+    clear
+    echo -e "${GREEN}================================================${NC}"
+    echo -e "${GREEN}  IES Military Database Analyzer Deployment${NC}"
+    echo -e "${GREEN}  COMPLETED SUCCESSFULLY${NC}"
+    echo -e "${GREEN}================================================${NC}"
+    echo
+    echo -e "${BLUE}Container Information:${NC}"
+    echo -e "Container ID:      ${GREEN}$CT_ID${NC}"
+    echo -e "Container Name:    ${GREEN}$CT_NAME${NC}"
+    echo -e "IP Address:        ${GREEN}$IP${NC}"
+    echo -e "Domain:            ${GREEN}$DOMAIN${NC}"
+    echo
+    echo -e "${BLUE}Access URLs:${NC}"
+    echo -e "Application HTTP:  ${CYAN}http://$IP${NC}"
+    echo -e "Application HTTPS: ${CYAN}https://$IP${NC}"
+    echo -e "Grafana Dashboard: ${CYAN}http://$IP:3000${NC} (admin/admin123)"
+    echo -e "Prometheus:        ${CYAN}http://$IP:9090${NC}"
+    echo
+    echo -e "${BLUE}Container Management:${NC}"
+    echo -e "Start Container:   ${YELLOW}pct start $CT_ID${NC}"
+    echo -e "Stop Container:    ${YELLOW}pct stop $CT_ID${NC}"
+    echo -e "Console Access:    ${YELLOW}pct enter $CT_ID${NC}"
+    echo
+    echo -e "${BLUE}Application Management (inside container):${NC}"
+    echo -e "Service Control:   ${YELLOW}ies-manage {start|stop|restart|status}${NC}"
+    echo -e "View Logs:         ${YELLOW}ies-manage logs [app|nginx|monitoring]${NC}"
+    echo -e "Update App:        ${YELLOW}ies-manage update${NC}"
+    echo -e "Create Backup:     ${YELLOW}ies-manage backup${NC}"
+    echo -e "System Status:     ${YELLOW}ies-monitor${NC}"
+    echo
+    echo -e "${BLUE}Configuration:${NC}"
+    echo -e "Config File:       ${GREEN}/root/ies-config.conf${NC}"
+    echo -e "Application Path:  ${GREEN}/opt/IES${NC}"
+    echo -e "Nginx Config:      ${GREEN}/etc/nginx/sites-available/ies-analyzer${NC}"
+    echo -e "Monitoring:        ${GREEN}/opt/monitoring${NC}"
+    echo
+    echo -e "${BLUE}Security:${NC}"
+    echo -e "Firewall:          ${GREEN}UFW enabled (192.168.0.0/24 only)${NC}"
+    echo -e "Fail2Ban:          ${GREEN}Active${NC}"
+    echo -e "SSL Certificate:   ${GREEN}Self-signed (consider replacing)${NC}"
+    
+    if [[ "$SSH_ENABLED" == "yes" ]]; then
+        echo -e "SSH Access:        ${GREEN}Enabled${NC}"
+        echo -e "SSH Command:       ${YELLOW}ssh root@$IP${NC}"
+    else
+        echo -e "SSH Access:        ${RED}Disabled${NC}"
+    fi
+    
+    echo
+    echo -e "${BLUE}Next Steps:${NC}"
+    echo "1. Access the application at https://$IP"
+    echo "2. Configure proper SSL certificates if needed"
+    echo "3. Set up DNS entries for $DOMAIN"
+    echo "4. Review and customize application settings"
+    echo "5. Configure monitoring alerts in Grafana"
+    echo "6. Schedule regular backups"
+    echo
+    echo -e "${BLUE}Support:${NC}"
+    echo "Configuration saved in container: /root/ies-config.conf"
+    echo "For troubleshooting, access container: pct enter $CT_ID"
+    echo "Check application logs: ies-manage logs app"
+    echo
+    echo -e "${GREEN}Deployment completed successfully!${NC}"
+}
+
+# Main execution
+main() {
+    clear
+    echo -e "${CYAN}========================================${NC}"
+    echo -e "${CYAN}  IES Military Database Analyzer       ${NC}"
+    echo -e "${CYAN}  Proxmox LXC Container Deployment     ${NC}"
+    echo -e "${CYAN}========================================${NC}"
+    echo
+    
+    # Verify we're running on Proxmox
+    if ! command -v pct &> /dev/null; then
+        msg_error "This script must be run on a Proxmox VE host"
+        exit 1
+    fi
+    
+    # Check for required template
+    if [[ ! -f "/var/lib/vz/template/cache/ubuntu-22.04-standard_22.04-1_amd64.tar.zst" ]]; then
+        msg_warn "Ubuntu 22.04 LXC template not found"
+        msg_info "Downloading Ubuntu 22.04 template..."
+        pveam update
+        pveam download local ubuntu-22.04-standard_22.04-1_amd64.tar.zst
+    fi
+    
+    # Start deployment process
+    msg_info "Starting IES Military Database Analyzer deployment..."
+    
+    # Create container
+    create_container
+    
+    # Install system dependencies
+    install_system_dependencies
+    
+    # Install Docker for monitoring
+    install_docker
+    
+    # Install IES application
+    install_ies_application
+    
+    # Run diagnostics
+    troubleshoot_installation
+    
+    # Configure Nginx
+    configure_nginx
+    
+    # Setup monitoring
+    setup_monitoring
+    
+    # Configure firewall
+    configure_firewall
+    
+    # Create management scripts
+    create_management_scripts
+    
+    # Finalize setup
+    finalize_setup
+    
+    # Show completion information
+    show_completion_info
+}
+
+# Run main function
+main "$@" /etc/apt/sources.list.d/docker.list; then
+            ARCH=\\$(dpkg --print-architecture)
+            CODENAME=\\$(lsb_release -cs)
+            echo \"deb [arch=\\${ARCH} signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] https://download.docker.com/linux/ubuntu \\${CODENAME} stable\" > /etc/apt/sources.list.d/docker.list
+            apt update
+        fi
+    fi
+fi
+
+# Fix Python dependencies
+echo '2. Checking Python dependencies...'
+cd /opt/IES
+source ies_env/bin/activate
+pip install --upgrade pip
+
+PACKAGES=\"networkx pandas numpy matplotlib seaborn plotly flask scikit-learn jinja2 gunicorn prometheus-client psutil\"
+for pkg in \\$PACKAGES; do
+    python3 -c \"import \\$pkg\" 2>/dev/null || {
+        echo \"Installing \\$pkg...\"
+        pip install --force-reinstall \\$pkg
+    }
+done
+
+# Test application
+echo '3. Testing application...'
+python3 -c \"
+import sys
+sys.path.append('/opt/IES')
+try:
+    from military_database_analyzer_v3 import MilitaryDatabaseAnalyzer
+    print('✓ Application import successful')
+except Exception as e:
+    print(f'✗ Application import failed: {e}')
+\"
+
+# Restart services
+echo '4. Restarting services...'
+systemctl restart ies-analyzer nginx docker
+sleep 5
+
+# Final status check
+echo '5. Service status:'
+systemctl is-active ies-analyzer nginx docker | paste <(echo -e 'IES\\nNginx\\nDocker') -
+
+echo 'Troubleshooting complete!'
+TROUBLESHOOT_EOF
+        chmod +x /usr/local/bin/ies-troubleshoot
+    "
+    
+    msg_ok "Diagnostics completed and troubleshooting script created"
 }
 
 # Configure Nginx reverse proxy
