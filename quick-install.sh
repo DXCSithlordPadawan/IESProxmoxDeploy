@@ -102,9 +102,9 @@ apt-get install -y \
     ca-certificates gnupg lsb-release software-properties-common \
     openssh-server >/dev/null 2>&1
 
-# Install Docker
+# Install Docker with proper repository configuration
 curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg
-echo 'deb [arch=\$(dpkg --print-architecture) signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] https://download.docker.com/linux/ubuntu \$(lsb_release -cs) stable' > /etc/apt/sources.list.d/docker.list
+echo \"deb [arch=\$(dpkg --print-architecture) signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] https://download.docker.com/linux/ubuntu \$(lsb_release -cs) stable\" > /etc/apt/sources.list.d/docker.list
 apt-get update >/dev/null 2>&1
 apt-get install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin >/dev/null 2>&1
 systemctl enable docker >/dev/null 2>&1
@@ -133,6 +133,7 @@ fi
 python3 -c \"import networkx, plotly, pandas, flask\" 2>/dev/null || {
     echo \"Installing missing dependencies...\"
     pip install --force-reinstall networkx plotly pandas flask matplotlib seaborn scikit-learn
+}x plotly pandas flask matplotlib seaborn scikit-learn
 }
 
 # Create directories
