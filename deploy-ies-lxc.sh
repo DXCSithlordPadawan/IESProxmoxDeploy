@@ -3,7 +3,7 @@
 # IES Military Database Analyzer LXC Container Creation Script
 # Compatible with Proxmox Community Scripts format
 # Version: 1.0.0
-# Author: Iain Reid (DXCSithlordPadawan)
+# Author: DXC Technology
 # Description: Creates an LXC container with IES Military Database Analyzer
 
 source /dev/stdin <<< "$FUNCTIONS_FILE_PATH"
@@ -24,13 +24,13 @@ DEFAULT_RAM="2048"
 DEFAULT_CPU_CORES="2"
 DEFAULT_IP="192.168.0.200"
 DEFAULT_GATEWAY="192.168.0.1"
-DEFAULT_DNS="192.168.0.110,1.1.1.1,8.8.8.8"
+DEFAULT_DNS="192.168.0.110"
 DEFAULT_STORAGE="pve1"
 DEFAULT_PASSWORD="BobTheBigRedBus-0"
 DEFAULT_SSH_ENABLED="yes"
 DEFAULT_CERT_SERVER="192.168.0.122"
 DEFAULT_DOMAIN="ies-analyzer.local"
-DEFAULT_TIMEZONE="UTC"
+DEFAULT_TIMEZONE="America/New_York"
 
 # Color codes for output
 RED='\033[0;31m'
@@ -486,14 +486,23 @@ install_ies_application() {
         python3 -m venv ies_env
         source ies_env/bin/activate
         
-        # Install Python dependencies
+        # Install Python dependencies with explicit package list
         pip install --upgrade pip
+        
+        # Install core dependencies first
+        pip install flask pandas numpy matplotlib seaborn plotly networkx \\
+                   scikit-learn jinja2 gunicorn prometheus-client psutil
+        
+        # Try requirements.txt if it exists (but don't fail if missing packages)
         if [ -f requirements.txt ]; then
-            pip install -r requirements.txt
-        else
-            pip install flask pandas numpy matplotlib seaborn plotly networkx \
-                       scikit-learn jinja2 gunicorn prometheus-client psutil
+            pip install -r requirements.txt || true
         fi
+        
+        # Verify critical dependencies are installed
+        python3 -c 'import networkx, plotly, pandas, flask, matplotlib, seaborn, numpy' || {
+            echo 'Installing missing dependencies...'
+            pip install --force-reinstall networkx plotly pandas flask matplotlib seaborn numpy scikit-learn
+        }
         
         # Create application directories
         mkdir -p /opt/IES/{logs,data,config,static,templates}
@@ -518,12 +527,57 @@ RestartSec=10
 WantedBy=multi-user.target
 SERVICE_EOF
         
+        # Test the application before enabling service
+        source ies_env/bin/activate
+        python3 -c 'import sys; sys.path.append(\"/opt/IES\"); from military_database_analyzer_v3 import MilitaryDatabaseAnalyzer; print(\"Import test successful\")' || {
+            echo 'Application import test failed, installing additional dependencies...'
+            pip install --upgrade flask pandas numpy matplotlib seaborn plotly networkx scikit-learn jinja2
+        }
+        
         systemctl daemon-reload
         systemctl enable ies-analyzer
         systemctl start ies-analyzer
     "
     
     msg_ok "IES Application installed and started"
+}
+
+# Add troubleshooting function
+troubleshoot_installation() {
+    msg_info "Running post-installation diagnostics..."
+    
+    # Check Python environment
+    pct exec $CT_ID -- bash -c "
+        cd /opt/IES
+        source ies_env/bin/activate
+        echo 'Python version:' && python3 --version
+        echo 'Pip version:' && pip --version
+        echo 'Installed packages:'
+        pip list | grep -E '(networkx|pandas|flask|matplotlib|plotly|seaborn|numpy|scikit-learn)'
+    "
+    
+    # Test application imports
+    pct exec $CT_ID -- bash -c "
+        cd /opt/IES
+        source ies_env/bin/activate
+        echo 'Testing critical imports...'
+        python3 -c 'import networkx; print(f\"networkx version: {networkx.__version__}\")' || echo 'networkx FAILED'
+        python3 -c 'import pandas; print(f\"pandas version: {pandas.__version__}\")' || echo 'pandas FAILED'
+        python3 -c 'import flask; print(f\"flask version: {flask.__version__}\")' || echo 'flask FAILED'
+        python3 -c 'import matplotlib; print(f\"matplotlib version: {matplotlib.__version__}\")' || echo 'matplotlib FAILED'
+        python3 -c 'import plotly; print(f\"plotly version: {plotly.__version__}\")' || echo 'plotly FAILED'
+    "
+    
+    # Test main application import
+    pct exec $CT_ID -- bash -c "
+        cd /opt/IES
+        source ies_env/bin/activate
+        echo 'Testing main application import...'
+        python3 -c 'from military_database_analyzer_v3 import MilitaryDatabaseAnalyzer; print(\"Main application import successful\")' || {
+            echo 'Main application import FAILED'
+            return 1
+        }
+    "
 }
 
 # Configure Nginx reverse proxy
@@ -975,6 +1029,9 @@ main() {
     
     # Install IES application
     install_ies_application
+    
+    # Run diagnostics
+    troubleshoot_installation
     
     # Configure Nginx
     configure_nginx

@@ -1,6 +1,5 @@
 #!/bin/bash
 # IES Military Database Analyzer - Quick Installer for Proxmox
-# Author - DXCSithlordPadawan
 # One-line deployment: curl -sSL https://raw.githubusercontent.com/DXCSithlordPadawan/IES/main/quick-install.sh | bash
 
 set -e
@@ -62,7 +61,7 @@ pct create $CT_ID /var/lib/vz/template/cache/$TEMPLATE \
     --rootfs "$STORAGE:8" \
     --net0 name=eth0,bridge=vmbr0,ip="$IP/24",gw="$GATEWAY" \
     --nameserver "$DNS" \
-    --timezone "UTC" \
+    --timezone "America/New_York" \
     --password "$PASSWORD" \
     --features nesting=1 \
     --unprivileged 1 \
@@ -122,12 +121,19 @@ source ies_env/bin/activate
 pip install --upgrade pip >/dev/null 2>&1
 
 # Install dependencies
+pip install flask pandas numpy matplotlib seaborn plotly networkx \\
+           scikit-learn jinja2 gunicorn prometheus-client psutil >/dev/null 2>&1
+
+# Also try requirements.txt if it exists (as backup)
 if [ -f requirements.txt ]; then
-    pip install -r requirements.txt >/dev/null 2>&1
-else
-    pip install flask pandas numpy matplotlib seaborn plotly networkx \\
-               scikit-learn jinja2 gunicorn prometheus-client psutil >/dev/null 2>&1
+    pip install -r requirements.txt >/dev/null 2>&1 || true
 fi
+
+# Verify critical dependencies are installed
+python3 -c \"import networkx, plotly, pandas, flask\" 2>/dev/null || {
+    echo \"Installing missing dependencies...\"
+    pip install --force-reinstall networkx plotly pandas flask matplotlib seaborn scikit-learn
+}
 
 # Create directories
 mkdir -p /opt/IES/{logs,data,config,static,templates}
