@@ -7,13 +7,13 @@ This deployment script creates a fully configured LXC container with the IES Mil
 ### Method 1: Download and Run (Recommended)
 ```bash
 # On your Proxmox host console
-wget -qO- https://raw.githubusercontent.com/DXCSithlordPadawan/IES/main/deploy-ies-lxc.sh | bash
+wget -qO- https://raw.githubusercontent.com/DXCSithlordPadawan/IESProxmoxDeploy/main/deploy-ies-lxc.sh | bash
 ```
 
 ### Method 2: Manual Download
 ```bash
 # Download the script
-wget https://raw.githubusercontent.com/DXCSithlordPadawan/IES/main/deploy-ies-lxc.sh
+wget https://raw.githubusercontent.com/DXCSithlordPadawan/IESProxmoxDeploy/main/deploy-ies-lxc.sh
 
 # Make executable
 chmod +x deploy-ies-lxc.sh

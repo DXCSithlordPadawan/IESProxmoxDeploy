@@ -7,13 +7,13 @@ This repository contains scripts to deploy the IES Military Database Analyzer as
 ### One-Line Installation (Recommended)
 ```bash
 # Run directly from Proxmox host console
-bash <(curl -sSL https://raw.githubusercontent.com/DXCSithlordPadawan/IES/main/quick-install.sh)
+bash <(curl -sSL https://raw.githubusercontent.com/DXCSithlordPadawan/IESProxmoxDeploy/main/quick-install.sh)
 ```
 
 ### Custom Installation
 ```bash
 # Download and run with custom settings
-wget https://raw.githubusercontent.com/DXCSithlordPadawan/IES/main/deploy-ies-lxc.sh
+wget https://raw.githubusercontent.com/DXCSithlordPadawan/IESProxmoxDeploy/main/deploy-ies-lxc.sh
 chmod +x deploy-ies-lxc.sh
 ./deploy-ies-lxc.sh
 ```
