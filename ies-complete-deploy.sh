@@ -22,7 +22,7 @@ DEFAULT_PASSWORD="BobTheBigRedBus-0"
 DEFAULT_SSH_ENABLED="yes"
 DEFAULT_CERT_SERVER="192.168.0.122"
 DEFAULT_DOMAIN="ies-analyzer.local"
-DEFAULT_TIMEZONE="America/New_York"
+DEFAULT_TIMEZONE="UTC"
 
 # Color codes
 RED='\033[0;31m'
@@ -697,6 +697,7 @@ configure_firewall() {
         ufw allow from 192.168.0.0/24 to any port 443 >/dev/null 2>&1
         ufw allow from 192.168.0.0/24 to any port 3000 >/dev/null 2>&1
         ufw allow from 192.168.0.0/24 to any port 9090 >/dev/null 2>&1
+		ufw allow from 192.168.0.0/24 to any port 9100 >/dev/null 2>&1
         
         ufw --force enable >/dev/null 2>&1
         systemctl enable fail2ban >/dev/null 2>&1

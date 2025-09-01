@@ -89,7 +89,7 @@ pct create $CT_ID /var/lib/vz/template/cache/$TEMPLATE \
     --rootfs "$STORAGE:$DISK_SIZE" \
     --net0 name=eth0,bridge=vmbr0,ip="$IP/24",gw="$GATEWAY" \
     --nameserver "$DNS" \
-    --timezone "America/New_York" \
+    --timezone "UTC" \
     --password "$PASSWORD" \
     --features nesting=1 \
     --unprivileged 1 \
@@ -458,6 +458,7 @@ ufw allow from 192.168.0.0/24 to any port 80 >/dev/null 2>&1
 ufw allow from 192.168.0.0/24 to any port 443 >/dev/null 2>&1
 ufw allow from 192.168.0.0/24 to any port 3000 >/dev/null 2>&1
 ufw allow from 192.168.0.0/24 to any port 9090 >/dev/null 2>&1
+ufw allow from 192.168.0.0/24 to any port 9100 >/dev/null 2>&1
 ufw --force enable >/dev/null 2>&1
 
 # Create management scripts
