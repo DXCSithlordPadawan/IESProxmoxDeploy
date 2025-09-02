@@ -28,7 +28,7 @@ DEFAULT_PASSWORD="BobTheBigRedBus-0"
 DEFAULT_SSH_ENABLED="yes"
 DEFAULT_CERT_SERVER="192.168.0.122"
 DEFAULT_DOMAIN="ies-analyzer.local"
-DEFAULT_TIMEZONE="America/New_York"
+DEFAULT_TIMEZONE="UTC"
 
 # Color codes for output
 RED='\033[0;31m'
