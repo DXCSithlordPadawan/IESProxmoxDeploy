@@ -905,38 +905,38 @@ configure_security() {
 create_management_scripts() {
     msg_info "Creating management scripts"
     
-    pct exec $CT_ID -- bash -c "
+    pct exec $CT_ID -- bash -c '
         mkdir -p /usr/local/bin
         
         # Create main management script
-        cat > /usr/local/bin/ies-manage << 'MANAGE_EOF'
+        cat > /usr/local/bin/ies-manage << '\''MANAGE_EOF'\''
 #!/bin/bash
 
-case \"\$1\" in
+case "$1" in
     start)
         systemctl start ies-analyzer nginx
         cd /opt/monitoring && (docker compose start || docker-compose start) 2>/dev/null
-        echo 'IES services started'
+        echo "IES services started"
         ;;
     stop)
         systemctl stop ies-analyzer nginx
         cd /opt/monitoring && (docker compose stop || docker-compose stop) 2>/dev/null
-        echo 'IES services stopped'
+        echo "IES services stopped"
         ;;
     restart)
         systemctl restart ies-analyzer nginx
         cd /opt/monitoring && (docker compose restart || docker-compose restart) 2>/dev/null
-        echo 'IES services restarted'
+        echo "IES services restarted"
         ;;
     status)
-        echo 'Service Status:'
-        systemctl is-active ies-analyzer nginx docker | paste <(echo -e 'IES App\\\\nNginx\\\\nDocker') -
+        echo "Service Status:"
+        systemctl is-active ies-analyzer nginx docker | paste <(echo -e "IES App\nNginx\nDocker") -
         echo
-        echo 'Monitoring Stack:'
-        cd /opt/monitoring && (docker compose ps || docker-compose ps) 2>/dev/null | grep -E '(prometheus|grafana|node-exporter)'
+        echo "Monitoring Stack:"
+        cd /opt/monitoring && (docker compose ps || docker-compose ps) 2>/dev/null | grep -E "(prometheus|grafana|node-exporter)"
         ;;
     logs)
-        case \"\$2\" in
+        case "$2" in
             app) journalctl -u ies-analyzer -f ;;
             nginx) journalctl -u nginx -f ;;
             monitoring) cd /opt/monitoring && (docker compose logs -f || docker-compose logs -f) 2>/dev/null ;;
@@ -944,72 +944,72 @@ case \"\$1\" in
         esac
         ;;
     test)
-        echo 'Testing IES endpoints...'
-        curl -s -o /dev/null -w 'Health Check: %{http_code}\\\\n' http://127.0.0.1:8000/health 2>/dev/null || echo 'Health Check: No response'
-        curl -s -o /dev/null -w 'Metrics: %{http_code}\\\\n' http://127.0.0.1:8000/metrics 2>/dev/null || echo 'Metrics: No response'
-        curl -s -o /dev/null -w 'HTTP: %{http_code}\\\\n' http://127.0.0.1/ 2>/dev/null || echo 'HTTP: No response'
-        curl -s -k -o /dev/null -w 'HTTPS: %{http_code}\\\\n' https://127.0.0.1/ 2>/dev/null || echo 'HTTPS: No response'
+        echo "Testing IES endpoints..."
+        curl -s -o /dev/null -w "Health Check: %{http_code}\n" http://127.0.0.1:8000/health 2>/dev/null || echo "Health Check: No response"
+        curl -s -o /dev/null -w "Metrics: %{http_code}\n" http://127.0.0.1:8000/metrics 2>/dev/null || echo "Metrics: No response"
+        curl -s -o /dev/null -w "HTTP: %{http_code}\n" http://127.0.0.1/ 2>/dev/null || echo "HTTP: No response"
+        curl -s -k -o /dev/null -w "HTTPS: %{http_code}\n" https://127.0.0.1/ 2>/dev/null || echo "HTTPS: No response"
         ;;
     update)
-        echo 'Updating IES application...'
+        echo "Updating IES application..."
         cd /opt/IES
         git pull >/dev/null 2>&1
         source ies_env/bin/activate
-        pip install --upgrade -r requirements.txt 2>/dev/null || echo 'Requirements file not found'
+        pip install --upgrade -r requirements.txt 2>/dev/null || echo "Requirements file not found"
         systemctl restart ies-analyzer
-        echo 'Update complete'
+        echo "Update complete"
         ;;
     fix-deps)
-        echo 'Fixing Python dependencies...'
+        echo "Fixing Python dependencies..."
         cd /opt/IES
         source ies_env/bin/activate
         pip install --force-reinstall networkx pandas numpy matplotlib seaborn plotly flask scikit-learn jinja2 gunicorn prometheus-client psutil
         systemctl restart ies-analyzer
-        echo 'Dependencies fixed'
+        echo "Dependencies fixed"
         ;;
     fix-apt)
-        echo 'Fixing APT configuration...'
+        echo "Fixing APT configuration..."
         if [[ -f /etc/apt/sources.list.d/docker.list ]]; then
-            if grep -q 'arch=' /etc/apt/sources.list.d/docker.list; then
-                ARCH=\\$(dpkg --print-architecture)
-                CODENAME=\\$(lsb_release -cs)
-                echo \"deb [arch=\\${ARCH} signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] https://download.docker.com/linux/ubuntu \\${CODENAME} stable\" > /etc/apt/sources.list.d/docker.list
+            if grep -q "arch=" /etc/apt/sources.list.d/docker.list; then
+                ARCH=$(dpkg --print-architecture)
+                CODENAME=$(lsb_release -cs)
+                echo "deb [arch=${ARCH} signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] https://download.docker.com/linux/ubuntu ${CODENAME} stable" > /etc/apt/sources.list.d/docker.list
             fi
         fi
         apt update >/dev/null 2>&1
-        echo 'APT configuration fixed'
+        echo "APT configuration fixed"
         ;;
     repair)
-        echo 'Running comprehensive repair...'
-        \\$0 fix-apt
-        \\$0 fix-deps
+        echo "Running comprehensive repair..."
+        $0 fix-apt
+        $0 fix-deps
         systemctl restart ies-analyzer nginx docker
         cd /opt/monitoring && (docker compose restart || docker-compose restart) 2>/dev/null
         sleep 10
-        \\$0 test
-        echo 'Repair completed'
+        $0 test
+        echo "Repair completed"
         ;;
     backup)
-        BACKUP_FILE=\"/opt/ies-backup-\\$(date +%Y%m%d-%H%M%S).tar.gz\"
-        echo \"Creating backup: \\$BACKUP_FILE\"
-        tar -czf \"\\$BACKUP_FILE\" /opt/IES/data /opt/IES/config /opt/monitoring 2>/dev/null
-        echo \"Backup created: \\$BACKUP_FILE\"
+        BACKUP_FILE="/opt/ies-backup-$(date +%Y%m%d-%H%M%S).tar.gz"
+        echo "Creating backup: $BACKUP_FILE"
+        tar -czf "$BACKUP_FILE" /opt/IES/data /opt/IES/config /opt/monitoring 2>/dev/null
+        echo "Backup created: $BACKUP_FILE"
         ;;
     *)
-        echo 'Usage: \\$0 {start|stop|restart|status|logs|test|update|fix-deps|fix-apt|repair|backup}'
+        echo "Usage: $0 {start|stop|restart|status|logs|test|update|fix-deps|fix-apt|repair|backup}"
         echo
-        echo 'Commands:'
-        echo '  start       - Start all IES services'
-        echo '  stop        - Stop all IES services'
-        echo '  restart     - Restart all IES services'
-        echo '  status      - Show service status'
-        echo '  logs [type] - Show logs (app, nginx, monitoring)'
-        echo '  test        - Test all endpoints'
-        echo '  update      - Update IES application'
-        echo '  fix-deps    - Fix Python dependencies'
-        echo '  fix-apt     - Fix APT configuration'
-        echo '  repair      - Full system repair'
-        echo '  backup      - Create backup'
+        echo "Commands:"
+        echo "  start       - Start all IES services"
+        echo "  stop        - Stop all IES services"
+        echo "  restart     - Restart all IES services"
+        echo "  status      - Show service status"
+        echo "  logs [type] - Show logs (app, nginx, monitoring)"
+        echo "  test        - Test all endpoints"
+        echo "  update      - Update IES application"
+        echo "  fix-deps    - Fix Python dependencies"
+        echo "  fix-apt     - Fix APT configuration"
+        echo "  repair      - Full system repair"
+        echo "  backup      - Create backup"
         exit 1
         ;;
 esac
@@ -1018,44 +1018,44 @@ MANAGE_EOF
         chmod +x /usr/local/bin/ies-manage
         
         # Create monitoring script
-        cat > /usr/local/bin/ies-monitor << 'MONITOR_EOF'
+        cat > /usr/local/bin/ies-monitor << '\''MONITOR_EOF'\''
 #!/bin/bash
 
-echo 'IES Military Database Analyzer Status'
-echo '====================================='
+echo "IES Military Database Analyzer Status"
+echo "====================================="
 echo
-echo 'Services:'
-systemctl is-active ies-analyzer nginx docker fail2ban | paste <(echo -e 'IES App\\\\nNginx\\\\nDocker\\\\nFail2Ban') -
+echo "Services:"
+systemctl is-active ies-analyzer nginx docker fail2ban | paste <(echo -e "IES App\nNginx\nDocker\nFail2Ban") -
 echo
-echo 'Network Information:'
-echo \"Container IP: $IP\"
-echo \"Gateway: $GATEWAY\"
-echo \"DNS: $DNS\"
-echo \"Domain: $DOMAIN\"
+echo "Network Information:"
+echo "Container IP: '$IP'"
+echo "Gateway: '$GATEWAY'"
+echo "DNS: '$DNS'"
+echo "Domain: '$DOMAIN'"
 echo
-echo 'Access URLs:'
-echo \"Application: https://$IP\"
-echo \"Grafana: http://$IP:3000 (admin/admin123)\"
-echo \"Prometheus: http://$IP:9090\"
-if [[ '$SSH_ENABLED' == 'yes' ]]; then
-    echo \"SSH: ssh root@$IP\"
+echo "Access URLs:"
+echo "Application: https://'$IP'"
+echo "Grafana: http://'$IP':3000 (admin/admin123)"
+echo "Prometheus: http://'$IP':9090"
+if [[ '\''$SSH_ENABLED'\'' == '\''yes'\'' ]]; then
+    echo "SSH: ssh root@'$IP'"
 fi
 echo
-echo 'System Resources:'
-echo \"Disk Usage: \\$(df -h / | tail -1 | awk '{print \\$5}') of \\$(df -h / | tail -1 | awk '{print \\$2}')\"
-echo \"Memory Usage: \\$(free -h | grep Mem | awk '{print \\$3 \"/\" \\$2}')\"
-echo \"CPU Load: \\$(uptime | awk -F'load average:' '{print \\$2}')\"
+echo "System Resources:"
+echo "Disk Usage: $(df -h / | tail -1 | awk '\''{print $5}'\'' ) of $(df -h / | tail -1 | awk '\''{print $2}'\'' )"
+echo "Memory Usage: $(free -h | grep Mem | awk '\''{print $3 "/" $2}'\'' )"
+echo "CPU Load: $(uptime | awk -F'\''load average:'\'' '\''{print $2}'\'' )"
 echo
-echo 'Monitoring:'
+echo "Monitoring:"
 if systemctl is-active --quiet docker; then
-    cd /opt/monitoring && (docker compose ps || docker-compose ps) 2>/dev/null | grep -E '(prometheus|grafana|node-exporter)' | awk '{print \\$1 \": \" \\$NF}' || echo 'Monitoring containers not found'
+    cd /opt/monitoring && (docker compose ps || docker-compose ps) 2>/dev/null | grep -E "(prometheus|grafana|node-exporter)" | awk '\''{print $1 ": " $NF}'\'' || echo "Monitoring containers not found"
 else
-    echo 'Docker service not running'
+    echo "Docker service not running"
 fi
 MONITOR_EOF
         
         chmod +x /usr/local/bin/ies-monitor
-    "
+    '
     
     msg_ok "Management scripts created"
 }
