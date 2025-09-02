@@ -769,7 +769,7 @@ NGINX_EOF
         openssl req -x509 -nodes -days 365 -newkey rsa:2048 \\
             -keyout /etc/nginx/ssl/server.key \\
             -out /etc/nginx/ssl/server.crt \\
-            -subj '/C=US/ST=State/L=City/O=IES/CN=$IP' >/dev/null 2>&1
+            -subj '/C=GB/ST=Hampshire/L=Farnborough/O=DXC/CN=$IP' >/dev/null 2>&1
         
         # Enable the site
         ln -sf /etc/nginx/sites-available/ies-analyzer /etc/nginx/sites-enabled/
@@ -1003,7 +1003,7 @@ case \"\$1\" in
         echo '  stop        - Stop all IES services'
         echo '  restart     - Restart all IES services'
         echo '  status      - Show service status'
-        echo '  logs [type] - Show logs (app, nginx, monitoring)'
+        echo '  logs \[type\] - Show logs (app, nginx, monitoring)'
         echo '  test        - Test all endpoints'
         echo '  update      - Update IES application'
         echo '  fix-deps    - Fix Python dependencies'
