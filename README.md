@@ -276,5 +276,6 @@ After deployment, verify:
 - [ ] Application accessible at https://your-ip
 - [ ] Grafana dashboard available at http://your-ip:3000
 - [ ] All services active in `ies-manage status`
+- [ ] Check the datetime sync 'dpkg-reconfigure tzdata'
 
 This unified deployment solution provides everything needed for a production-ready IES Military Database Analyzer installation with comprehensive monitoring, security, and management capabilities.
